@@ -1,0 +1,74 @@
+#基于gitlab标签的自动构建到阿里云K8S的微服务
+image: maven:3.3.9-jdk-8
+variables:
+  TZ: Asia/Shanghai
+  MAVEN_CLI_OPTS: "-s /cache/settings.xml --batch-mode"
+  MAVEN_OPTS: "-Dmaven.repo.local=/cache/repository"
+stages:
+  - deploy
+  - docker
+  - k8s
+  - notify
+build:production:
+  stage: deploy
+  tags:
+    - development
+  only:
+    refs:
+      - tags
+    variables:
+      - $CI_COMMIT_TAG =~/^release+.[0-9]{12}/
+  script:
+    - echo $MAVEN_SETTINGS |base64 -d > /cache/settings.xml
+    - mvn versions:set -DnewVersion=1.0.$CI_PIPELINE_ID
+    - mvn $MAVEN_CLI_OPTS clean deploy -U -am -DskipTests $MAVEN_OPTS -Pproduction
+    - cp account-service/target/com.xxx.account.jar /deploy/com.xxx.account.production.jar
+docker:production:
+  image: docker:19.03.8
+  stage: docker
+  tags:
+    - development
+  only:
+    refs:
+      - tags
+    variables:
+      - $CI_COMMIT_TAG =~/^release+.[0-9]{12}/
+  script:
+    - mkdir target
+    - cp /deploy/com.xxx.account.production.jar target/app.jar
+    - docker login -u $REGISTRY_USERNAME -p $REGISTRY_PASSWORD registry.cn-beijing.aliyuncs.com
+    - docker build -t registry.cn-beijing.aliyuncs.com/xxx/account:$CI_PIPELINE_ID .
+    - docker push registry.cn-beijing.aliyuncs.com/xxx/account:$CI_PIPELINE_ID
+    - docker rmi registry.cn-beijing.aliyuncs.com/xxx/account:$CI_PIPELINE_ID
+k8s:production:
+  image: linkyard/kubectl
+  stage: k8s
+  tags:
+    - development
+  only:
+    refs:
+      - tags
+    variables:
+      - $CI_COMMIT_TAG =~/^release+.[0-9]{12}/
+  script:
+    - mkdir -p ~/.kube
+    - echo $kube_config |base64 -d > ~/.kube/config
+    - sed -i "s/IMAGE_TAG/$CI_PIPELINE_ID/g" deployment.yaml
+    - cat deployment.yaml
+    - kubectl apply -f deployment.yaml --validate=false
+success:
+  image: xxx/curl:1.1
+  stage: notify
+  tags:
+    - development
+  script:
+    - curl -s -d  "chatId=wrwrbyEQAAcHIkF_B4wfaE1P2XvAB-4w&content=`date '+%Y-%m-%d %H:%M:%S'`%0A$CI_PROJECT_PATH+构建完成%0Abranch/tag:+"$CI_COMMIT_REF_NAME"%0A构建人:+"$GITLAB_USER_EMAIL"%0A%0A"$CI_PROJECT_URL"/pipelines/"$CI_PIPELINE_ID $钉钉或企微
+  when: on_success
+failure:
+  image: xxx/curl:1.1
+  stage: notify
+  tags:
+    - development
+  script:
+    - curl -s -d  "chatId=wrwrbyEQAAcHIkF_B4wfaE1P2XvAB-4w&content=`date '+%Y-%m-%d %H:%M:%S'`%0A$CI_PROJECT_PATH+构建失败%0Abranch/tag:+"$CI_COMMIT_REF_NAME"%0A构建人:+"$GITLAB_USER_EMAIL"%0A%0A"$CI_PROJECT_URL"/pipelines/"$CI_PIPELINE_ID $钉钉或企微
+  when: on_failure
